@@ -165,6 +165,10 @@ export declare class WeChatDSHBridge {
     private monitorTask;
     private readonly seenInbound;
     private loginState;
+    /** One QR flow at a time; a second start would race the same bot session. */
+    private loginInFlight;
+    /** Retry armed after a failed/expired flow so the QR page never dead-ends. */
+    private loginRetryTimer;
     /** Pending question cards per user (rpcId-keyed, first = active). */
     private readonly pendingQuestions;
     /** Pending approval cards per user (rpcId-keyed). */
@@ -555,6 +559,9 @@ export declare class WeChatDSHBridge {
     private discardQueuedOutbound;
     private deleteToken;
     private startLoginFlow;
+    /** Re-arm a failed QR flow after a short pause; no-op while one is running. */
+    private scheduleLoginRetry;
+    private clearLoginRetry;
     private startMonitor;
     /**
      * Apply a config patch. Returns the updated editable values. When the

@@ -44,7 +44,12 @@ export async function login(params) {
     else {
         log(`QR URL: ${qrcodeUrl}`);
     }
-    const deadline = Date.now() + 5 * 60_000;
+    // The QR flow must outlive a slow install: opening WeChat, finding the
+    // plugin, and confirming can take minutes, and each QR only lives ~5
+    // minutes. Thirty minutes with automatic QR refresh means the page a user
+    // opened after install still has a scannable code. The bridge retries the
+    // whole flow on timeout, so this is a safety net, not the normal exit.
+    const deadline = Date.now() + 30 * 60_000;
     let currentQrcode = qrResp.qrcode;
     let refreshCount = 0;
     while (Date.now() < deadline) {
@@ -57,10 +62,10 @@ export async function login(params) {
                 break;
             case "expired": {
                 refreshCount++;
-                if (refreshCount > 3) {
+                if (refreshCount > 30) {
                     throw new Error("QR code expired multiple times, please retry");
                 }
-                log(`QR expired, refreshing (${refreshCount}/3)...`);
+                log(`QR expired, refreshing (${refreshCount}/30)...`);
                 const newQr = await getBotQrcode({ baseUrl, botType });
                 currentQrcode = newQr.qrcode;
                 if (renderQrUrl) {

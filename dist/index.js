@@ -474,6 +474,8 @@ const QR_PAGE = `<!DOCTYPE html>
   img.qr { width: 260px; height: 260px; border: 1px solid #eee; border-radius: 8px; }
   .error { color: #c0392b; white-space: pre-wrap; }
   .ok { color: #27ae60; font-weight: 600; }
+  button.retry { display: none; margin: .5rem 0 0; padding: .5rem 1rem; border: 0; border-radius: 8px; background: #07c160; color: #fff; font-size: .9rem; cursor: pointer; }
+  button.retry[disabled] { opacity: .6; cursor: default; }
 </style>
 </head>
 <body>
@@ -482,7 +484,8 @@ const QR_PAGE = `<!DOCTYPE html>
   <div id="state" class="state">正在获取二维码…</div>
   <img id="qr" class="qr" alt="QR" style="display:none" />
   <div id="err" class="error"></div>
-  <p style="color:#999;font-size:.8rem">用微信扫描二维码，确认登录后本页自动刷新。二维码 5 分钟有效，过期自动刷新。</p>
+  <button id="retry" class="retry">重新生成二维码</button>
+  <p style="color:#999;font-size:.8rem">用微信扫描二维码，确认登录后本页自动刷新。二维码约 5 分钟有效，过期会自动换一张。</p>
 </div>
 <script>
   async function poll() {
@@ -492,32 +495,49 @@ const QR_PAGE = `<!DOCTYPE html>
       const state = document.getElementById('state');
       const qr = document.getElementById('qr');
       const err = document.getElementById('err');
+      const retry = document.getElementById('retry');
       err.textContent = '';
       if (data.phase === 'logged-in') {
         state.className = 'state ok';
         state.textContent = '✅ 已登录 (Bot: ' + (data.botId || '') + ')';
         qr.style.display = 'none';
+        retry.style.display = 'none';
         return;
       }
       if (data.phase === 'failed') {
-        state.textContent = '❌ 登录失败';
+        // The bridge re-arms the flow every few seconds; keep polling so a
+        // fresh QR replaces this notice without the user reloading.
+        state.className = 'state';
+        state.textContent = '登录已过期，正在自动换一张…';
         err.textContent = data.error || '';
-        return;
-      }
-      if (data.phase === 'scaned') {
-        state.textContent = '已扫码，请在微信中确认…';
+        qr.style.display = 'none';
+        retry.style.display = 'inline-block';
       } else {
-        state.textContent = data.qrUrl ? '请用微信扫描下方二维码' : '正在获取二维码…';
-      }
-      if (data.qrUrl) {
-        qr.src = '/wechat/api/qr-image?v=' + encodeURIComponent(data.qrUrl);
-        qr.style.display = 'block';
+        retry.style.display = 'none';
+        if (data.phase === 'scaned') {
+          state.textContent = '已扫码，请在微信中确认…';
+        } else {
+          state.textContent = data.qrUrl ? '请用微信扫描下方二维码' : '正在获取二维码…';
+        }
+        if (data.qrUrl) {
+          qr.src = '/wechat/api/qr-image?v=' + encodeURIComponent(data.qrUrl);
+          qr.style.display = 'block';
+        }
       }
     } catch (e) {
       document.getElementById('state').textContent = '无法连接 DSH（' + e + '）';
     }
     setTimeout(poll, 2000);
   }
+  document.getElementById('retry').addEventListener('click', async () => {
+    const btn = document.getElementById('retry');
+    btn.disabled = true;
+    btn.textContent = '正在重新生成…';
+    try { await fetch('/wechat/api/relogin', { method: 'POST' }); } catch (e) { /* the poll below reports it */ }
+    btn.disabled = false;
+    btn.textContent = '重新生成二维码';
+    btn.style.display = 'none';
+  });
   poll();
 </script>
 </body>

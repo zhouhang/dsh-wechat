@@ -555,6 +555,10 @@ export class WeChatDSHBridge {
   private monitorTask: Promise<void> | null = null;
   private readonly seenInbound = new Map<string, number>();
   private loginState: LoginState = { phase: "idle" };
+  /** One QR flow at a time; a second start would race the same bot session. */
+  private loginInFlight = false;
+  /** Retry armed after a failed/expired flow so the QR page never dead-ends. */
+  private loginRetryTimer: ReturnType<typeof setTimeout> | null = null;
   /** Pending question cards per user (rpcId-keyed, first = active). */
   private readonly pendingQuestions = new Map<string, PendingQuestion[]>();
   /** Pending approval cards per user (rpcId-keyed). */
@@ -1436,6 +1440,7 @@ export class WeChatDSHBridge {
    */
   async relogin(): Promise<{ ok: boolean; message: string }> {
     this.stopIlink("relogin");
+    this.clearLoginRetry();
     this.deleteToken();
     this.token = null;
     this.tokenInvalid = false;
@@ -1450,6 +1455,7 @@ export class WeChatDSHBridge {
   /** Log out: stop the monitor and remove the stored token. */
   async logout(): Promise<{ ok: boolean; message: string }> {
     this.stopIlink("logout");
+    this.clearLoginRetry();
     this.deleteToken();
     this.token = null;
     this.tokenInvalid = false;
@@ -1531,6 +1537,11 @@ export class WeChatDSHBridge {
   }
 
   private async startLoginFlow(): Promise<void> {
+    // A second concurrent flow would open a second QR for the same bot and
+    // whichever connects last wins. Keep it single-flight.
+    if (this.loginInFlight || this.interactionStopped) return;
+    this.loginInFlight = true;
+    this.clearLoginRetry();
     try {
       this.loginState = { phase: "waiting-qr" };
       const token = await login({
@@ -1553,6 +1564,31 @@ export class WeChatDSHBridge {
     } catch (err) {
       this.loginState = { phase: "failed", error: String(err) };
       console.error(`[dsh-wechat] login failed: ${String(err)}`);
+      // The QR expired before it was scanned (or the network blipped). Start
+      // a fresh one instead of leaving the page at a dead "登录失败": a user
+      // who installs the plugin and only opens the page minutes later must
+      // still find a scannable code.
+      this.scheduleLoginRetry();
+    } finally {
+      this.loginInFlight = false;
+    }
+  }
+
+  /** Re-arm a failed QR flow after a short pause; no-op while one is running. */
+  private scheduleLoginRetry(): void {
+    if (this.loginRetryTimer || this.interactionStopped) return;
+    this.loginRetryTimer = setTimeout(() => {
+      this.loginRetryTimer = null;
+      if (!this.interactionStopped && !this.loginInFlight && this.loginState.phase === "failed") {
+        void this.startLoginFlow();
+      }
+    }, 5_000);
+  }
+
+  private clearLoginRetry(): void {
+    if (this.loginRetryTimer) {
+      clearTimeout(this.loginRetryTimer);
+      this.loginRetryTimer = null;
     }
   }
 

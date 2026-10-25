@@ -17,7 +17,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { login, loadToken, type TokenData } from "../weixin/auth.js";
+import { LoginBlockedError, login, loadToken, type TokenData } from "../weixin/auth.js";
 import { startMonitor, clearSyncBuf } from "../weixin/monitor.js";
 import { sendTextMessage, sendMediaMessage, splitText } from "../weixin/send.js";
 import {
@@ -1564,11 +1564,18 @@ export class WeChatDSHBridge {
     } catch (err) {
       this.loginState = { phase: "failed", error: String(err) };
       console.error(`[dsh-wechat] login failed: ${String(err)}`);
-      // The QR expired before it was scanned (or the network blipped). Start
-      // a fresh one instead of leaving the page at a dead "登录失败": a user
-      // who installs the plugin and only opens the page minutes later must
-      // still find a scannable code.
-      this.scheduleLoginRetry();
+      // A blocked state (already bound / verification code) cannot be fixed by
+      // showing another QR; retrying would spin on the same answer. Surface the
+      // message and let the user act in WeChat, then press 重新生成二维码.
+      if (err instanceof LoginBlockedError) {
+        this.clearLoginRetry();
+      } else {
+        // The QR expired before it was scanned (or the network blipped). Start
+        // a fresh one instead of leaving the page at a dead "登录失败": a user
+        // who installs the plugin and only opens the page minutes later must
+        // still find a scannable code.
+        this.scheduleLoginRetry();
+      }
     } finally {
       this.loginInFlight = false;
     }

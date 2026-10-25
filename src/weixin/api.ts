@@ -385,6 +385,8 @@ export async function getQrcodeStatus(params: {
   baseurl?: string;
   ilink_bot_id?: string;
   ilink_user_id?: string;
+  /** IDC host to poll instead, when status is `scaned_but_redirect`. */
+  redirect_host?: string;
 }> {
   return apiGet(
     params.baseUrl,

@@ -9,6 +9,14 @@ export interface TokenData {
     userId: string;
     savedAt: string;
 }
+/**
+ * A login state the user has to resolve in WeChat (already bound, verification
+ * code, too many wrong codes). Retrying automatically would only spin on the
+ * same answer, so the bridge surfaces the message instead of re-arming a QR.
+ */
+export declare class LoginBlockedError extends Error {
+    constructor(message: string);
+}
 export declare function loadToken(storageDir: string): TokenData | null;
 export declare function saveToken(storageDir: string, data: TokenData): void;
 export declare function login(params: {

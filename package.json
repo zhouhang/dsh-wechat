@@ -65,7 +65,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/pan17/dsh-wechat.git"
+    "url": "git+https://github.com/zhouhang/dsh-wechat.git"
   },
   "keywords": [
     "wechat",
@@ -74,5 +74,9 @@
     "cordis",
     "bridge",
     "agent"
-  ]
+  ],
+  "homepage": "https://github.com/zhouhang/dsh-wechat#readme",
+  "bugs": {
+    "url": "https://github.com/zhouhang/dsh-wechat/issues"
+  }
 }

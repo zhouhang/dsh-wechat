@@ -1,3 +1,7 @@
+> **本仓库是独立副本，安装请使用：**
+> `dsh plugin --profile desktop add "github:zhouhang/dsh-wechat"`
+> 详见 [INSTALL.md](./INSTALL.md)。
+
 # dsh-wechat
 
 [![npm](https://img.shields.io/npm/v/dsh-wechat?style=flat-square&logo=npm)](https://www.npmjs.com/package/dsh-wechat)

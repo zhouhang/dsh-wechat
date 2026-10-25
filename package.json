@@ -1,0 +1,78 @@
+{
+  "name": "dsh-wechat",
+  "version": "0.13.3",
+  "description": "Bridge WeChat (iLink bot) to DeepSeek Harness (DSH)",
+  "type": "module",
+  "files": [
+    "dist/",
+    "resources/",
+    "docs/",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "package.json"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./client": "./dist/client.js",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc && node scripts/copy-client.mjs",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "release": "node scripts/release.mjs",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/semver": "^7.8.0",
+    "qrcode-generator": "^2.0.4",
+    "semver": "^7.8.5",
+    "typescript": "^5.5.0",
+    "vitest": "^4.1.8"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "dsh": ">=0.2.1-0 <0.3.0-0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.2.1-0 <0.3.0-0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pan17/dsh-wechat.git"
+  },
+  "keywords": [
+    "wechat",
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "bridge",
+    "agent"
+  ]
+}

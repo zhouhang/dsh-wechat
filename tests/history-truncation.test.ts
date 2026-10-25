@@ -1,0 +1,226 @@
+/**
+ * `/history` per-entry truncation:
+ *   - Non-last entries ≤ 800 chars pass through unchanged
+ *   - Non-last entries > 800 chars are truncated to 800 chars + "…"
+ *   - The most recent assistant message is exempt from truncation —
+ *     the reader wants to read the latest reply end-to-end
+ *   - WeChat chunking (splitText / textChunkLimit) still applies for long totals
+ */
+
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs";
+
+const sendTextMessage = vi.fn().mockResolvedValue(undefined);
+const sendMediaMessage = vi.fn().mockResolvedValue(undefined);
+
+vi.mock("../src/weixin/send.js", () => ({
+  sendTextMessage: (...args: unknown[]) => sendTextMessage(...args),
+  sendMediaMessage: (...args: unknown[]) => sendMediaMessage(...args),
+  splitText: (text: string, maxLen: number) =>
+    text.length <= maxLen ? [text] : [text.slice(0, maxLen), text.slice(maxLen)],
+}));
+
+vi.mock("../src/weixin/api.js", () => ({
+  sendTyping: () => Promise.resolve(undefined),
+  getConfig: () => Promise.resolve({ typing_ticket: "tk" }),
+  isSessionTimeoutError: () => false,
+  isMessageLimitError: () => false,
+  isInvalidRequestError: () => false,
+}));
+
+import { WeChatDSHBridge } from "../src/bridge/bridge.js";
+import { defaultConfig } from "../src/config.js";
+
+interface AgentLike {
+  session?: {
+    events?: Array<{ type: string; time?: number; data?: unknown }>;
+    snapshotEvents?: () => Array<{ type: string; time?: number; data?: unknown }>;
+  };
+}
+
+function makeBridge(
+  events: Array<{ type: string; time?: number; data?: unknown }>,
+  mode: "events" | "snapshot" = "events",
+) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-wx-hist-"));
+  const agent: AgentLike = mode === "snapshot"
+    ? { session: { snapshotEvents: () => events } }
+    : { session: { events } };
+  const agentsService = {
+    create: async () => undefined,
+    resume: async () => undefined,
+    get: (id: string) => (id === "wx-1" ? (agent as never) : undefined),
+    list: () => [agent as never],
+  };
+  const ctx = {
+    get: (name: string) => (name === "agents" ? agentsService : undefined),
+    on: () => () => {},
+  };
+  const cfg = defaultConfig();
+  cfg.storageDir = dir;
+  const bridge = new WeChatDSHBridge(ctx, cfg);
+  (bridge as unknown as { token: unknown }).token = { baseUrl: "https://x", token: "t" };
+  const state = (bridge as unknown as { state: { ensureUser(u: string, c: string): unknown; update(u: string, p: unknown): void } }).state;
+  state.ensureUser("u1", "C:\\work");
+  state.update("u1", { sessionId: "wx-1" });
+  return bridge;
+}
+
+function assistantEventWithText(text: string, time = Date.now()) {
+  return {
+    type: "assistant/message",
+    time,
+    data: { turn: 1, step: 1, message: { content: [{ type: "text", text }] } },
+  };
+}
+
+function userEventWithText(text: string, time = Date.now()) {
+  return {
+    type: "user/message",
+    time,
+    data: { message: { content: [{ type: "text", text }] } },
+  };
+}
+
+async function runHistory(bridge: WeChatDSHBridge): Promise<string[]> {
+  sendTextMessage.mockClear();
+  await (bridge as unknown as { handleMessage: (m: unknown) => Promise<void> }).handleMessage({
+    message_type: 1,
+    from_user_id: "u1",
+    context_token: "ctx",
+    item_list: [{ type: 1, text_item: { text: "/history" } }],
+  });
+  return sendTextMessage.mock.calls.map((c) => String(c[1]));
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  sendTextMessage.mockResolvedValue(undefined);
+  sendMediaMessage.mockResolvedValue(undefined);
+});
+
+describe("/history per-entry truncation", () => {
+  it("passes short entries through unchanged", async () => {
+    const bridge = makeBridge([assistantEventWithText("短回复，不到 800 字。")]);
+    const texts = await runHistory(bridge);
+    expect(texts.join("\n")).toContain("短回复，不到 800 字。");
+    expect(texts.join("\n")).not.toContain("…");
+  });
+
+  it("renders each entry as a role header plus the original body", async () => {
+    const bridge = makeBridge([
+      userEventWithText("第一行\n第二行", 1000),
+      assistantEventWithText("助手第一行\n助手第二行", 2000),
+    ]);
+    const text = (await runHistory(bridge)).join("\n");
+    expect(text).toMatch(/👤 你 · .+\n第一行\n第二行/);
+    expect(text).toMatch(/🤖 助手 · .+\n助手第一行\n助手第二行/);
+    expect(text).not.toContain("你:");
+    expect(text).not.toContain("助手:");
+  });
+
+  it("truncates non-last entries > 800 chars to 800 + …", async () => {
+    // Two assistant events so the long one is NOT the latest — must truncate.
+    const long = "x".repeat(1500);
+    const bridge = makeBridge([
+      assistantEventWithText(long, 1000),
+      assistantEventWithText("最新回复，简短。", 2000),
+    ]);
+    const texts = await runHistory(bridge);
+    const text = texts.join("\n");
+    // The earlier (long) entry's body line ends at a newline.
+    const lines = text.split("\n");
+    const truncatedBody = lines.find((l) => l.includes("…") && l.startsWith("x"));
+    expect(truncatedBody).toBeDefined();
+    // slice(0, LIMIT - 1) + "…" = 799 + 1 = 800 chars.
+    expect(truncatedBody!.length).toBe(800);
+    expect(truncatedBody!.endsWith("…")).toBe(true);
+    expect(truncatedBody!.startsWith("x".repeat(50))).toBe(true);
+    expect(text).toContain("🤖 助手");
+    expect(text).toContain("最新回复，简短。");
+  });
+
+  it("the latest assistant message is exempt from truncation even when long", async () => {
+    const long = "x".repeat(1500);
+    const bridge = makeBridge([assistantEventWithText(long)]);
+    const texts = await runHistory(bridge);
+    const text = texts.join("\n");
+    // The single assistant is the latest → body must NOT carry "…".
+    expect(text).toContain("🤖 助手");
+    expect(text).toContain("x".repeat(1500));
+    expect(text).not.toContain("…");
+  });
+
+  it("the latest assistant is untruncated even when followed by a user message", async () => {
+    const longAssistant = "y".repeat(1500);
+    const bridge = makeBridge([
+      assistantEventWithText(longAssistant, 1000),
+      userEventWithText("用户的追问", 2000),
+    ]);
+    const texts = await runHistory(bridge);
+    const text = texts.join("\n");
+    expect(text).toContain("🤖 助手");
+    expect(text).toContain("y".repeat(1500));
+    expect(text).not.toContain("…");
+    expect(text).toContain("👤 你");
+    expect(text).toContain("用户的追问");
+  });
+
+  it("history-with-cards still runs alongside the truncation exemption", async () => {
+    const long = "x".repeat(1500);
+    const bridge = makeBridge([assistantEventWithText(long)]);
+    // Register a pending question card so /history also re-sends the full card.
+    (bridge as unknown as { handleMuxFrame: (f: unknown) => void }).handleMuxFrame({
+      type: "server-request",
+      rpcId: "q-rpc",
+      method: "question/requested",
+      payload: {
+        type: "question/requested",
+        sessionId: "wx-1",
+        questions: [{ id: "q1", question: "Continue?", options: [{ label: "Yes" }] }],
+      },
+    });
+    const texts = await runHistory(bridge);
+    expect(texts.some((t) => t.includes("Continue?"))).toBe(true);
+    // The untruncated latest assistant reply still flows through (no "…").
+    expect(texts.some((t) => t.includes("🤖 助手") && /x{1500}/.test(t))).toBe(true);
+  });
+
+  it("reads live history from snapshotEvents when the events array is absent (DSH 0.1.5)", async () => {
+    const bridge = makeBridge([assistantEventWithText("来自 snapshotEvents 的回复")], "snapshot");
+    const texts = await runHistory(bridge);
+    expect(texts.join("\n")).toContain("来自 snapshotEvents 的回复");
+  });
+
+  it("cold history prefers sessionQuery.readSession when the agent is not live", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-wx-hist-cold-"));
+    const query = {
+      listSessions: async () => [],
+      readTitle: async () => undefined,
+      listEvents: async () => [{ type: "user/message", time: 1 }],
+      readSession: async () => ({
+        events: [
+          { type: "user/message", time: 1, data: { message: { content: [{ type: "text", text: "cold user" }] } } },
+          { type: "assistant/message", time: 2, data: { message: { content: [{ type: "text", text: "cold assistant" }] } } },
+        ],
+      }),
+    };
+    const ctx = {
+      get: (name: string) => (name === "sessionQuery" ? query : undefined),
+      on: () => () => {},
+    };
+    const cfg = defaultConfig();
+    cfg.storageDir = dir;
+    const bridge = new WeChatDSHBridge(ctx, cfg);
+    (bridge as unknown as { token: unknown }).token = { baseUrl: "https://x", token: "t" };
+    const state = (bridge as unknown as { state: { ensureUser(u: string, c: string): unknown; update(u: string, p: unknown): void } }).state;
+    state.ensureUser("u1", "C:\\work");
+    state.update("u1", { sessionId: "wx-1" });
+    const texts = await runHistory(bridge);
+    const joined = texts.join("\n");
+    expect(joined).toContain("cold user");
+    expect(joined).toContain("cold assistant");
+  });
+});
